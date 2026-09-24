@@ -27,21 +27,42 @@
     </section>
 
     <!-- 关系管理 -->
-    <section class="card" aria-labelledby="edges-title">
+    <section class="card wide" aria-labelledby="edges-title">
       <h2 id="edges-title">② 父母 → 子女关系</h2>
-      <form id="edge-form" class="edge-form">
-        <label>
-          父母
-          <select id="edge-parent"></select>
-        </label>
-        <span class="arrow" aria-hidden="true">→</span>
-        <label>
-          子女
-          <select id="edge-child"></select>
-        </label>
-        <button type="submit">建立关系</button>
-      </form>
-      <ul id="edge-list" class="edge-list" aria-live="polite"></ul>
+      <div class="edges-grid">
+        <div class="edges-col">
+          <h3 class="col-title">单条建立</h3>
+          <form id="edge-form" class="edge-form">
+            <label>
+              父母
+              <select id="edge-parent"></select>
+            </label>
+            <span class="arrow" aria-hidden="true">→</span>
+            <label>
+              子女
+              <select id="edge-child"></select>
+            </label>
+            <button type="submit">建立关系</button>
+          </form>
+          <ul id="edge-list" class="edge-list" aria-live="polite"></ul>
+        </div>
+
+        <div class="edges-col">
+          <h3 class="col-title">批量录入草稿</h3>
+          <p class="col-hint">
+            复用左侧成员选择器：选好父母与子女后点「加入草稿」，可累积多条；
+            先预检逐条错误，整批合法后一次提交。
+          </p>
+          <div class="batch-actions">
+            <button type="button" id="draft-add">加入草稿</button>
+            <button type="button" id="batch-precheck" class="primary">预检整批</button>
+            <button type="button" id="batch-submit" disabled>提交整批</button>
+            <button type="button" id="draft-clear" class="danger-link">清空草稿</button>
+          </div>
+          <div id="batch-status" class="batch-status" aria-live="polite"></div>
+          <ul id="draft-list" class="edge-list draft-list" aria-live="polite"></ul>
+        </div>
+      </div>
     </section>
 
     <!-- 共同祖先查询 -->

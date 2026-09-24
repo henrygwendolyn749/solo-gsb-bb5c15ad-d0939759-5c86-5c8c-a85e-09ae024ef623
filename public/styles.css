@@ -62,6 +62,61 @@ body {
 
 .card.wide { grid-column: 1 / -1; }
 
+/* 关系卡片：单条建立 + 批量草稿 两栏 */
+.edges-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 22px;
+  align-items: start;
+}
+
+.edges-col + .edges-col {
+  border-left: 1px solid var(--border);
+  padding-left: 22px;
+}
+
+.col-title {
+  margin: 0 0 6px;
+  font-size: 0.98rem;
+}
+
+.col-hint {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.batch-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.batch-status { margin-bottom: 8px; }
+
+.batch-line {
+  margin: 4px 0;
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-size: 0.86rem;
+}
+
+.batch-line.ok { color: #065f46; background: var(--ok-bg); border: 1px solid var(--ok-border); }
+.batch-line.err { color: #991b1b; background: var(--warn-bg); border: 1px solid var(--warn-border); }
+.batch-line.warn { color: #92400e; background: #fffbeb; border: 1px solid #fcd34d; }
+.batch-line.muted { color: var(--muted); background: transparent; border: none; padding: 2px 0; }
+
+.draft-list li.draft-item { flex-wrap: wrap; }
+.draft-list .draft-error {
+  flex: 1 1 100%;
+  color: var(--danger);
+  font-size: 0.82rem;
+  padding-left: 4px;
+}
+.draft-list li.invalid .edge-text { color: var(--danger); }
+
 .card h2 {
   margin: 0 0 14px;
   font-size: 1.15rem;
@@ -242,6 +297,13 @@ button.danger-link {
 @media (max-width: 720px) {
   .layout { grid-template-columns: 1fr; }
   .paths { grid-template-columns: 1fr; }
+  .edges-grid { grid-template-columns: 1fr; }
+  .edges-col + .edges-col {
+    border-left: none;
+    border-top: 1px solid var(--border);
+    padding-left: 0;
+    padding-top: 16px;
+  }
 }
 
 .path-col h4 {

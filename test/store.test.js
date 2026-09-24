@@ -60,8 +60,7 @@ test('非法输入与规则拒绝', () => {
   assert.equal(store.addEdge(a.id, a.id).error.includes('自指'), true);
 });
 
-test('手工编辑出的环路数据文件在加载时被净化为 DAG', () => {
-  const file = tmpFile();
+test('手工编辑出的环路数据文件在加载时被净化为 DAG', () => {  const file = tmpFile();
   // A -> B -> C -> A 为环路；另含一条合法边 C -> D
   const raw = {
     maxMembers: 30,
@@ -89,4 +88,97 @@ test('手工编辑出的环路数据文件在加载时被净化为 DAG', () => {
   assert.deepEqual(r.ancestors.map((a) => a.id), ['B']);
   assert.equal(r.ancestors[0].genA, 2);
   assert.equal(r.ancestors[0].genB, 0);
+});
+
+test('版本号：初始为 1，每次成功变更递增并落盘', () => {
+  const file = tmpFile();
+  const store = createStore(file);
+  assert.equal(store.list().version, 1);
+  const a = store.addMember('A').member;
+  assert.equal(store.list().version, 2);
+  const b = store.addMember('B').member;
+  assert.equal(store.list().version, 3);
+  store.addEdge(a.id, b.id);
+  assert.equal(store.list().version, 4);
+  // 失败的写入不递增版本
+  store.addEdge(a.id, a.id);
+  assert.equal(store.list().version, 4);
+
+  const reloaded = createStore(file);
+  assert.equal(reloaded.list().version, 4);
+});
+
+test('批量提交：合法批次一次写入并只递增一个版本', () => {
+  const store = createStore(tmpFile());
+  const a = store.addMember('A').member;
+  const b = store.addMember('B').member;
+  const c = store.addMember('C').member;
+  const version = store.list().version;
+
+  const result = store.addEdgesBatch(
+    [{ parentId: a.id, childId: b.id }, { parentId: b.id, childId: c.id }],
+    version,
+  );
+  assert.equal(result.error, null);
+  assert.equal(result.added, 2);
+  assert.equal(store.list().version, version + 1);
+  assert.equal(store.list().edges.length, 2);
+});
+
+test('批量提交：任一条无效则整批拒绝、一条不写、版本不变', () => {
+  const store = createStore(tmpFile());
+  const a = store.addMember('A').member;
+  const b = store.addMember('B').member;
+  const version = store.list().version;
+
+  const result = store.addEdgesBatch(
+    [
+      { parentId: a.id, childId: b.id }, // 合法
+      { parentId: b.id, childId: a.id }, // 成环，非法
+    ],
+    version,
+  );
+  assert.ok(result.error);
+  assert.ok(result.results.some((r) => r.errors.length > 0));
+  assert.equal(store.list().edges.length, 0);
+  assert.equal(store.list().version, version);
+});
+
+test('批量提交：版本不符（期间家谱变化）整体拒绝并返回 stale', () => {
+  const store = createStore(tmpFile());
+  const a = store.addMember('A').member;
+  const b = store.addMember('B').member;
+  const versionAtPrecheck = store.list().version;
+
+  // 预检之后、提交之前，家谱发生了另一次变更
+  const c = store.addMember('C').member;
+  assert.notEqual(store.list().version, versionAtPrecheck);
+
+  const result = store.addEdgesBatch(
+    [{ parentId: a.id, childId: b.id }],
+    versionAtPrecheck,
+  );
+  assert.ok(result.stale);
+  assert.equal(result.currentVersion, store.list().version);
+  // 陈旧版本的提交不得写入
+  assert.equal(store.list().edges.length, 0);
+  // 成员 C 的加入仍然保留
+  assert.ok(store.list().members.some((m) => m.id === c.id));
+
+  // 用最新版本重新提交则成功
+  const retry = store.addEdgesBatch(
+    [{ parentId: a.id, childId: b.id }],
+    store.list().version,
+  );
+  assert.equal(retry.error, null);
+  assert.equal(store.list().edges.length, 1);
+});
+
+test('批量提交：缺版本号或空批次被拒绝', () => {
+  const store = createStore(tmpFile());
+  const a = store.addMember('A').member;
+  const b = store.addMember('B').member;
+  assert.ok(store.addEdgesBatch([{ parentId: a.id, childId: b.id }], undefined).error);
+  assert.ok(store.addEdgesBatch([], store.list().version).error);
+  assert.equal(store.list().edges.length, 0);
 });

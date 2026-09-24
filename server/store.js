@@ -2,12 +2,21 @@
 
 /**
  * JSON 文件持久化：启动时读取，每次变更后同步写入（先写临时文件再 rename）。
+ *
+ * 乐观并发：state.version 为单调递增的整数版本，任何成功的变更都 +1 并落盘。
+ * 批量提交必须携带预检时拿到的 expectedVersion，与当前版本不一致则整体拒绝。
  */
 
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { createState, validateEdge, isReachableUp, MAX_MEMBERS } = require('./familyGraph');
+const {
+  createState,
+  validateEdge,
+  validateEdgeBatch,
+  isReachableUp,
+  MAX_MEMBERS,
+} = require('./familyGraph');
 
 function createStore(filePath) {
   const state = loadState(filePath);
@@ -18,6 +27,7 @@ function createStore(filePath) {
     const tmp = path.join(dir, `.${path.basename(filePath)}.${process.pid}.tmp`);
     // 统一以 { members, edges } 的边表格式落盘，与 loadState 读取格式保持一致
     const snapshot = {
+      version: state.version,
       maxMembers: state.maxMembers,
       members: state.members,
       edges: edgesList(state),
@@ -26,8 +36,15 @@ function createStore(filePath) {
     fs.renameSync(tmp, filePath);
   }
 
+  /** 应用一次变更并递增版本（每次写操作只调用一次） */
+  function commit() {
+    state.version += 1;
+    persist();
+  }
+
   function list() {
     return {
+      version: state.version,
       maxMembers: state.maxMembers,
       members: state.members,
       edges: edgesList(state),
@@ -43,8 +60,8 @@ function createStore(filePath) {
     const member = { id: crypto.randomUUID(), name };
     state.members.push(member);
     state.parentsOf[member.id] = [];
-    persist();
-    return { error: null, member };
+    commit();
+    return { error: null, member, version: state.version };
   }
 
   function renameMember(id, rawName) {
@@ -53,8 +70,8 @@ function createStore(filePath) {
     const member = state.members.find((m) => m.id === id);
     if (!member) return { error: '成员不存在' };
     member.name = name;
-    persist();
-    return { error: null, member };
+    commit();
+    return { error: null, member, version: state.version };
   }
 
   /** 删除成员：同时移除以其为父母或子女的全部边（级联） */
@@ -67,16 +84,16 @@ function createStore(filePath) {
     for (const childId of Object.keys(state.parentsOf)) {
       state.parentsOf[childId] = state.parentsOf[childId].filter((p) => p !== id);
     }
-    persist();
-    return { error: null };
+    commit();
+    return { error: null, version: state.version };
   }
 
   function addEdge(parentId, childId) {
     const check = validateEdge(state, parentId, childId);
     if (check.error) return check;
     state.parentsOf[childId].push(parentId);
-    persist();
-    return { error: null };
+    commit();
+    return { error: null, version: state.version };
   }
 
   function deleteEdge(parentId, childId) {
@@ -85,11 +102,55 @@ function createStore(filePath) {
       return { error: '关系不存在' };
     }
     state.parentsOf[childId] = parents.filter((p) => p !== parentId);
-    persist();
-    return { error: null };
+    commit();
+    return { error: null, version: state.version };
   }
 
-  return { list, addMember, renameMember, deleteMember, addEdge, deleteEdge, getState: () => state };
+  /**
+   * 原子批量添加关系：
+   * 1) expectedVersion 必须等于当前版本，否则拒绝（期间家谱发生过变化）；
+   * 2) 以「当前关系 + 整批草稿」合并结果重新校验，任何一条无效则整批拒绝、一条不写；
+   * 3) 全部合法时一次写入、一次持久化、版本 +1。
+   */
+  function addEdgesBatch(edges, expectedVersion) {
+    if (!Number.isInteger(expectedVersion) || expectedVersion < 0) {
+      return { error: '缺少家谱版本号，请先进行预检' };
+    }
+    if (expectedVersion !== state.version) {
+      return {
+        error: '家谱已在预检后发生变化，请重新预检后再提交',
+        stale: true,
+        currentVersion: state.version,
+      };
+    }
+    if (!Array.isArray(edges) || edges.length === 0) {
+      return { error: '请至少添加一条关系草稿' };
+    }
+
+    const check = validateEdgeBatch(state, edges);
+    if (!check.valid) {
+      return { error: '批次中存在不合法关系，未写入任何一条', results: check.results };
+    }
+
+    for (const r of check.results) {
+      if (!r.firstInBatch || r.alreadyExists) continue;
+      const [parentId, childId] = r.key.split('=>');
+      state.parentsOf[childId].push(parentId);
+    }
+    commit();
+    return { error: null, version: state.version, added: check.results.length };
+  }
+
+  return {
+    list,
+    addMember,
+    renameMember,
+    deleteMember,
+    addEdge,
+    deleteEdge,
+    addEdgesBatch,
+    getState: () => state,
+  };
 }
 
 function edgesList(state) {
@@ -102,7 +163,9 @@ function edgesList(state) {
 
 function loadState(filePath) {
   if (!fs.existsSync(filePath)) {
-    return createState(MAX_MEMBERS);
+    const fresh = createState(MAX_MEMBERS);
+    fresh.version = 1; // 空家谱的初始版本
+    return fresh;
   }
   let raw;
   try {
@@ -112,6 +175,8 @@ function loadState(filePath) {
   }
 
   const state = createState(Number.isInteger(raw.maxMembers) ? raw.maxMembers : MAX_MEMBERS);
+  // 兼容旧数据文件（无 version 字段）：从 1 开始
+  state.version = Number.isInteger(raw.version) && raw.version >= 0 ? raw.version : 1;
 
   if (Array.isArray(raw.members)) {
     for (const m of raw.members) {

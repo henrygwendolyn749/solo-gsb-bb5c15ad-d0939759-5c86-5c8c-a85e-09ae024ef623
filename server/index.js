@@ -3,7 +3,7 @@
 const path = require('path');
 const express = require('express');
 const { createStore } = require('./store');
-const { findCommonAncestors, validateEdge } = require('./familyGraph');
+const { findCommonAncestors, validateEdge, validateEdgeBatch, MAX_BATCH_EDGES } = require('./familyGraph');
 
 const PORT = parseInt(process.env.PORT, 10) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -85,6 +85,76 @@ app.delete('/api/edges', (req, res) => {
   const result = store.deleteEdge(parentId, childId);
   if (result.error) return sendError(res, 404, result.error);
   res.json(store.list());
+});
+
+/** 规范化一批草稿入参：只接受含字符串 parentId/childId 的对象 */
+function normalizeBatchEdges(body) {
+  const raw = body && Array.isArray(body.edges) ? body.edges : null;
+  if (!raw) return null;
+  return raw.slice(0, MAX_BATCH_EDGES).map((e) => ({
+    parentId: e && typeof e.parentId === 'string' ? e.parentId.trim() : '',
+    childId: e && typeof e.childId === 'string' ? e.childId.trim() : '',
+  }));
+}
+
+/** 为预检/提交结果补充成员姓名，便于前端直接展示逐条错误 */
+function decorateBatchResults(state, results) {
+  const byId = new Map(state.members.map((m) => [m.id, m.name]));
+  return results.map((r) => ({
+    index: r.index,
+    parentId: r.parentId,
+    childId: r.childId,
+    parentName: r.parentId ? byId.get(r.parentId) || '（不存在）' : '',
+    childName: r.childId ? byId.get(r.childId) || '（不存在）' : '',
+    errors: r.errors,
+  }));
+}
+
+/**
+ * 批量关系预检：不写入。基于「当前关系 + 整批草稿」合并结果校验，
+ * 返回家谱版本、整批可否提交与逐条错误。草稿顺序不影响判定。
+ */
+app.post('/api/edges/batch/precheck', (req, res) => {
+  const edges = normalizeBatchEdges(req.body);
+  if (!edges) return sendError(res, 400, '请求体需要 edges 数组');
+  if (edges.length === 0) return sendError(res, 400, '请至少添加一条关系草稿');
+
+  const state = store.getState();
+  const check = validateEdgeBatch(state, edges);
+  res.json({
+    version: state.version,
+    valid: check.valid,
+    total: check.results.length,
+    invalidCount: check.results.reduce((n, r) => n + (r.errors.length ? 1 : 0), 0),
+    results: decorateBatchResults(state, check.results),
+  });
+});
+
+/**
+ * 批量提交：必须携带预检返回的 version。
+ * 版本与当前一致且整批合法时一次持久化；版本不符返回 409 提示重新预检；
+ * 任一条非法则整批拒绝、不写入任何一条。
+ */
+app.post('/api/edges/batch', (req, res) => {
+  const edges = normalizeBatchEdges(req.body);
+  if (!edges) return sendError(res, 400, '请求体需要 edges 数组');
+  if (edges.length === 0) return sendError(res, 400, '请至少添加一条关系草稿');
+
+  const expectedVersion = Number.parseInt(req.body && req.body.version, 10);
+  const result = store.addEdgesBatch(edges, expectedVersion);
+  if (result.error) {
+    if (result.stale) {
+      return res.status(409).json({
+        error: result.error,
+        currentVersion: result.currentVersion,
+      });
+    }
+    return res.status(400).json({
+      error: result.error,
+      results: result.results ? decorateBatchResults(store.getState(), result.results) : undefined,
+    });
+  }
+  res.status(201).json(store.list());
 });
 
 /**

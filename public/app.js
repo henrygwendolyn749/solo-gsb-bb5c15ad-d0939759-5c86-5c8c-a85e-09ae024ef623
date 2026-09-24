@@ -3,10 +3,17 @@
 /* 家谱关系核对 —— 原生前端逻辑 */
 
 const state = {
+  version: 1,
   maxMembers: 30,
   members: [],
   edges: [], // { parentId, childId }
 };
+
+/* 批量录入草稿：drafts 为 [{ key, parentId, childId }]；
+   batchCheck 保存最近一次预检结果（含家谱版本），草稿变动后置空。 */
+let draftSeq = 0;
+const drafts = [];
+let batchCheck = null; // { version, valid, total, invalidCount, results } | null
 
 // 记住下拉框的选择，数据刷新后尽量保持
 const selection = {
@@ -58,13 +65,17 @@ async function api(url, options = {}) {
     /* 非 JSON 响应 */
   }
   if (!res.ok) {
-    throw new Error((body && body.error) || `请求失败（${res.status}）`);
+    const err = new Error((body && body.error) || `请求失败（${res.status}）`);
+    err.status = res.status;
+    err.body = body;
+    throw err;
   }
   return body;
 }
 
 async function refresh() {
   const data = await api('/api/state');
+  state.version = data.version;
   state.maxMembers = data.maxMembers;
   state.members = data.members;
   state.edges = data.edges;
@@ -73,10 +84,12 @@ async function refresh() {
 }
 
 function applyStateAndRender(data) {
+  state.version = data.version;
   state.maxMembers = data.maxMembers;
   state.members = data.members;
   state.edges = data.edges;
   reconcileSelection();
+  invalidateBatchCheckWithHint('家谱数据已变化，批量草稿需重新预检。');
   render();
 }
 
@@ -106,6 +119,7 @@ function render() {
   renderEdges();
   renderSelects();
   renderStaleBanner();
+  renderBatch();
 }
 
 function renderMembers() {
@@ -345,6 +359,196 @@ async function removeEdge(edge) {
     toast(err.message, true);
   }
 }
+
+/* ---------------- 批量关系录入 ---------------- */
+
+/** 草稿内容变动（增删、清空）后，上次预检立即失效 */
+function invalidateBatchCheck() {
+  batchCheck = null;
+}
+
+/** 家谱数据被刷新（任何增删改）后，预检作废并提示重新预检 */
+function invalidateBatchCheckWithHint(reason) {
+  batchCheck = null;
+  const status = $('batch-status');
+  if (status && reason) status.dataset.hint = reason;
+}
+
+function draftErrorByIndex() {
+  const map = new Map();
+  if (batchCheck) {
+    for (const r of batchCheck.results) {
+      if (r.errors && r.errors.length) map.set(r.index, r.errors);
+    }
+  }
+  return map;
+}
+
+function renderBatch() {
+  const list = $('draft-list');
+  list.replaceChildren();
+
+  if (drafts.length === 0) {
+    list.appendChild(el('li', {
+      class: 'empty-hint',
+      text: '草稿为空：选择父母与子女后点击「加入草稿」。',
+    }));
+  } else {
+    const errorsByIndex = draftErrorByIndex();
+    drafts.forEach((d, index) => {
+      const li = el('li', { class: errorsByIndex.has(index) ? 'draft-item invalid' : 'draft-item' });
+      li.appendChild(el('span', { class: 'edge-text' }, [
+        el('span', { class: 'p-name', text: nameOf(d.parentId) }),
+        document.createTextNode(' → '),
+        el('span', { class: 'c-name', text: nameOf(d.childId) }),
+      ]));
+      li.appendChild(el('button', {
+        class: 'danger-link',
+        text: '移除',
+        onClick: () => removeDraft(index),
+      }));
+      const errors = errorsByIndex.get(index);
+      if (errors) {
+        for (const msg of errors) {
+          li.appendChild(el('div', { class: 'draft-error', text: `✗ ${msg}` }));
+        }
+      }
+      list.appendChild(li);
+    });
+  }
+
+  renderBatchStatus();
+}
+
+function renderBatchStatus() {
+  const box = $('batch-status');
+  box.replaceChildren();
+  const submitBtn = $('batch-submit');
+
+  // 数据刷新导致预检失效的提示（草稿已清空则无需提示）
+  if (!batchCheck && drafts.length > 0 && box.dataset.hint) {
+    box.appendChild(el('p', { class: 'batch-line warn', text: `⚠️ ${box.dataset.hint}` }));
+  }
+
+  if (!batchCheck) {
+    if (drafts.length > 0 && !box.dataset.hint) {
+      box.appendChild(el('p', {
+        class: 'batch-line muted',
+        text: `已维护 ${drafts.length} 条草稿，尚未预检。`,
+      }));
+    }
+    submitBtn.disabled = true;
+    return;
+  }
+
+  delete box.dataset.hint;
+  if (batchCheck.valid) {
+    box.appendChild(el('p', {
+      class: 'batch-line ok',
+      text: `✓ 预检通过：${batchCheck.total} 条关系全部合法，可以整批提交。（家谱版本 ${batchCheck.version}）`,
+    }));
+    submitBtn.disabled = false;
+  } else {
+    box.appendChild(el('p', {
+      class: 'batch-line err',
+      text: `✗ 预检未通过：${batchCheck.invalidCount}/${batchCheck.total} 条存在错误，整批不可提交，请按下方逐条提示修改。`,
+    }));
+    submitBtn.disabled = true;
+  }
+  box.appendChild(el('p', {
+    class: 'batch-line muted',
+    text: `预检基于家谱版本 ${batchCheck.version}；提交前若家谱被其他操作改动，提交会被拒绝并要求重新预检。`,
+  }));
+}
+
+function addDraft() {
+  syncSelectionFromForm();
+  const parentId = $('edge-parent').value;
+  const childId = $('edge-child').value;
+  if (!parentId || !childId) { toast('请选择父母与子女', true); return; }
+  if (parentId === childId) { toast('拒绝自指关系：不能成为自己的父母（预检也会拒绝）', true); return; }
+  if (drafts.some((d) => d.parentId === parentId && d.childId === childId)) {
+    toast('该关系已在草稿中（批内重复预检会拒绝）', true);
+    return;
+  }
+  if (drafts.length >= 100) { toast('一批最多 100 条草稿', true); return; }
+  drafts.push({ key: `d${++draftSeq}`, parentId, childId });
+  invalidateBatchCheck();
+  renderBatch();
+}
+
+function removeDraft(index) {
+  drafts.splice(index, 1);
+  invalidateBatchCheck();
+  renderBatch();
+}
+
+async function runPrecheck() {
+  if (drafts.length === 0) { toast('请先加入至少一条草稿', true); return; }
+  try {
+    const payload = drafts.map((d) => ({ parentId: d.parentId, childId: d.childId }));
+    batchCheck = await api('/api/edges/batch/precheck', {
+      method: 'POST',
+      body: JSON.stringify({ edges: payload }),
+    });
+    renderBatch();
+    if (batchCheck.valid) toast(`预检通过（${batchCheck.total} 条），可整批提交`);
+    else toast(`预检未通过：${batchCheck.invalidCount} 条错误`, true);
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+async function submitBatch() {
+  if (!batchCheck || !batchCheck.valid) {
+    toast('请先预检且整批合法后再提交', true);
+    return;
+  }
+  const version = batchCheck.version;
+  const payload = drafts.map((d) => ({ parentId: d.parentId, childId: d.childId }));
+  const expectedAdded = payload.length;
+  try {
+    const data = await api('/api/edges/batch', {
+      method: 'POST',
+      body: JSON.stringify({ edges: payload, version }),
+    });
+    drafts.length = 0;
+    batchCheck = null;
+    applyStateAndRender(data);
+    markStale();
+    toast(`已一次写入 ${expectedAdded} 条关系`);
+  } catch (err) {
+    if (err.status === 409) {
+      // 期间家谱发生变化：预检作废，必须重新预检
+      batchCheck = null;
+      renderBatch();
+      toast(`${err.message}（当前版本 ${err.body && err.body.currentVersion}）`, true);
+    } else if (err.status === 400 && err.body && Array.isArray(err.body.results)) {
+      // 理论上预检通过不会走到；用服务端最新结果覆盖展示，保持单一事实来源
+      batchCheck = {
+        version,
+        valid: false,
+        total: err.body.results.length,
+        invalidCount: err.body.results.filter((r) => r.errors.length).length,
+        results: err.body.results,
+      };
+      renderBatch();
+      toast(err.message, true);
+    } else {
+      toast(err.message, true);
+    }
+  }
+}
+
+$('draft-add').addEventListener('click', addDraft);
+$('batch-precheck').addEventListener('click', runPrecheck);
+$('batch-submit').addEventListener('click', submitBatch);
+$('draft-clear').addEventListener('click', () => {
+  if (drafts.length === 0) return;
+  drafts.length = 0;
+  invalidateBatchCheck();
+  renderBatch();
+});
 
 /* ---------------- 共同祖先查询结果渲染 ---------------- */
 
