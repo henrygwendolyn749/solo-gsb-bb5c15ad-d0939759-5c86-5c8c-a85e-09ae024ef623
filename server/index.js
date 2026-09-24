@@ -15,7 +15,8 @@ app.use(express.json({ limit: '64kb' }));
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 function sendError(res, status, message) {
-  return res.status(status).json({ error: message });
+  const payload = typeof message === 'string' ? { error: message } : message;
+  return res.status(status).json(payload);
 }
 
 /** 统一的输入校验：从请求体取非空字符串字段 */
@@ -85,6 +86,56 @@ app.delete('/api/edges', (req, res) => {
   const result = store.deleteEdge(parentId, childId);
   if (result.error) return sendError(res, 404, result.error);
   res.json(store.list());
+});
+
+/** 为预检结果补上成员姓名（成员可能已在预检前被删除） */
+function decorateBatchResult(result) {
+  const byId = new Map(store.list().members.map((m) => [m.id, m.name]));
+  return {
+    version: store.getVersion(),
+    valid: result.valid,
+    error: result.error,
+    items: result.items.map((item) => ({
+      index: item.index,
+      parentId: item.parentId,
+      childId: item.childId,
+      parentName: item.parentId ? byId.get(item.parentId) || '（已删除）' : '',
+      childName: item.childId ? byId.get(item.childId) || '（已删除）' : '',
+      errors: item.errors,
+    })),
+  };
+}
+
+/**
+ * 批量关系预检：在「当前关系 + 整批草稿」的合并结果上校验
+ * 成员存在、自指、批内及已有重复、父母上限与祖先环路。
+ * 不写入任何数据，只返回每条草稿的错误、整批可否提交及当前家谱版本。
+ * 请求体：{ edges: [{ parentId, childId }, ...] }
+ */
+app.post('/api/edges/batch/preview', (req, res) => {
+  const edges = req.body && req.body.edges;
+  const result = store.validateEdgeBatch(edges);
+  res.json(decorateBatchResult(result));
+});
+
+/**
+ * 批量关系提交：必须携带预检返回的家谱版本 version。
+ * 服务端重新比对版本并重跑全部校验：版本变化（409）或任何一条非法（400）
+ * 都整批拒绝、不写入任何一条；合法时整批一次持久化并返回最新关系列表。
+ * 请求体：{ version: number, edges: [...] }
+ */
+app.post('/api/edges/batch', (req, res) => {
+  const edges = req.body && req.body.edges;
+  const expectedVersion = req.body && req.body.version;
+  const result = store.commitEdges(edges, expectedVersion);
+  if (result.error) {
+    const payload = { error: result.error };
+    if (result.currentVersion !== undefined) payload.currentVersion = result.currentVersion;
+    // 非法条目明细一并返回，便于前端展示每条错误
+    if (result.result) payload.preview = decorateBatchResult(result.result);
+    return sendError(res, result.status || 400, payload);
+  }
+  res.status(201).json(store.list());
 });
 
 /**

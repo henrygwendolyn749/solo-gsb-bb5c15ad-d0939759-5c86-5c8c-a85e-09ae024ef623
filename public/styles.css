@@ -289,3 +289,110 @@ button.danger-link {
 /* 重命名输入 */
 .member-list li.renaming { flex-wrap: wrap; }
 .member-list li.renaming input { flex: 1 1 100%; }
+
+/* 批量录入草稿 */
+.batch-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fafbfc;
+  padding: 12px 14px;
+  margin: 4px 0 18px;
+}
+
+.batch-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.batch-head h3 {
+  margin: 0;
+  font-size: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.batch-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.batch-actions button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.list-title {
+  margin: 4px 0 10px;
+  font-size: 1rem;
+}
+
+.draft-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.draft-row {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  padding: 7px 10px;
+  margin-bottom: 6px;
+}
+
+.draft-row.valid { border-color: var(--ok-border); background: var(--ok-bg); }
+.draft-row.invalid { border-color: var(--warn-border); background: var(--warn-bg); }
+
+.draft-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.draft-main .edge-text { flex: 1; }
+
+.draft-index {
+  color: var(--muted);
+  font-size: 0.82rem;
+  min-width: 30px;
+}
+
+.draft-tag {
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+}
+
+.draft-tag.ok { color: #047857; background: #d1fae5; }
+.draft-tag.bad { color: var(--danger); background: #fee2e2; }
+
+.draft-errors {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0 0 0 40px;
+  color: var(--danger);
+  font-size: 0.85rem;
+}
+
+.draft-errors li::before { content: '• '; }
+
+.batch-status {
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 0.88rem;
+}
+
+.batch-status.ok { color: #065f46; background: var(--ok-bg); border: 1px solid var(--ok-border); }
+.batch-status.warn { color: #92400e; background: #fffbeb; border: 1px solid #fcd34d; }
+.batch-status.error { color: #991b1b; background: var(--warn-bg); border: 1px solid var(--warn-border); }
+.batch-status.info { color: var(--muted); background: var(--code-bg); border: 1px solid var(--border); }

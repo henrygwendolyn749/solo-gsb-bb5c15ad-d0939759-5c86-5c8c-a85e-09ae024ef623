@@ -27,7 +27,7 @@
     </section>
 
     <!-- 关系管理 -->
-    <section class="card" aria-labelledby="edges-title">
+    <section class="card wide" aria-labelledby="edges-title">
       <h2 id="edges-title">② 父母 → 子女关系</h2>
       <form id="edge-form" class="edge-form">
         <label>
@@ -40,7 +40,28 @@
           <select id="edge-child"></select>
         </label>
         <button type="submit">建立关系</button>
+        <button type="button" id="draft-add">加入批量草稿</button>
       </form>
+
+      <!-- 批量录入草稿 -->
+      <div id="batch-panel" class="batch-panel">
+        <div class="batch-head">
+          <h3>批量录入草稿 <span id="draft-count" class="badge">0</span></h3>
+          <div class="batch-actions">
+            <button type="button" id="batch-preview" class="primary">预检整批</button>
+            <button type="button" id="batch-submit" disabled>全部合法，提交整批</button>
+            <button type="button" id="batch-clear" class="danger-link">清空草稿</button>
+          </div>
+        </div>
+        <p id="batch-status" class="batch-status" hidden></p>
+        <ol id="draft-list" class="draft-list" aria-live="polite"></ol>
+        <p class="empty-hint" id="draft-empty">
+          草稿为空。在上方选择父母与子女后点击「加入批量草稿」可累计多条；
+          点击「预检整批」查看每条错误及整批可否提交，提交前家谱被他人改动会被拒绝并要求重新预检。
+        </p>
+      </div>
+
+      <h3 class="list-title">已有关系</h3>
       <ul id="edge-list" class="edge-list" aria-live="polite"></ul>
     </section>
 

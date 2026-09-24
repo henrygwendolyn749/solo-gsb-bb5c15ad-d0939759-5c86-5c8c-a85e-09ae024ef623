@@ -3,10 +3,19 @@
 /* 家谱关系核对 —— 原生前端逻辑 */
 
 const state = {
+  version: 0,
   maxMembers: 30,
   members: [],
   edges: [], // { parentId, childId }
 };
+
+// 批量录入草稿：{ key, parentId, childId }，key 仅用于前端定位，不参与判定
+let draftSeq = 0;
+const drafts = [];
+// 最近一次预检结果：{ version, valid, error, byKey: Map<key, { errors, parentName, childName }> }
+// 仅当 version 与当前家谱版本一致且草稿未被改动时有效
+let preview = null;
+let previewStale = false; // 预检后家谱/草稿是否已变化
 
 // 记住下拉框的选择，数据刷新后尽量保持
 const selection = {
@@ -65,18 +74,24 @@ async function api(url, options = {}) {
 
 async function refresh() {
   const data = await api('/api/state');
+  const versionChanged = data.version !== state.version;
+  state.version = data.version;
   state.maxMembers = data.maxMembers;
   state.members = data.members;
   state.edges = data.edges;
   reconcileSelection();
+  if (versionChanged && preview && !previewStale) invalidatePreview('家谱已变化，请重新预检');
   render();
 }
 
 function applyStateAndRender(data) {
+  const versionChanged = data.version !== state.version;
+  state.version = data.version;
   state.maxMembers = data.maxMembers;
   state.members = data.members;
   state.edges = data.edges;
   reconcileSelection();
+  if (versionChanged && preview && !previewStale) invalidatePreview('家谱已变化，请重新预检');
   render();
 }
 
@@ -105,6 +120,7 @@ function render() {
   renderMembers();
   renderEdges();
   renderSelects();
+  renderDrafts();
   renderStaleBanner();
 }
 
@@ -345,6 +361,206 @@ async function removeEdge(edge) {
     toast(err.message, true);
   }
 }
+
+/* ---------------- 批量关系草稿 ---------------- */
+
+let staleReason = ''; // 预检失效原因（草稿变化或家谱版本变化）
+
+function invalidatePreview(reason) {
+  preview = null;
+  previewStale = true;
+  staleReason = reason;
+  renderDrafts();
+}
+
+function draftKeys() {
+  return drafts.map((d) => d.key);
+}
+
+function addDraftFromForm() {
+  syncSelectionFromForm();
+  const parentId = $('edge-parent').value;
+  const childId = $('edge-child').value;
+  if (!parentId || !childId) { toast('请选择父母与子女', true); return; }
+  drafts.push({ key: `d${++draftSeq}`, parentId, childId });
+  invalidatePreview('草稿已修改，请重新预检');
+  renderDrafts();
+}
+
+function removeDraft(key) {
+  const idx = drafts.findIndex((d) => d.key === key);
+  if (idx >= 0) drafts.splice(idx, 1);
+  invalidatePreview('草稿已修改，请重新预检');
+  renderDrafts();
+}
+
+function clearDrafts() {
+  if (drafts.length === 0) return;
+  if (!confirm('确定清空全部草稿？（不会影响已有关系）')) return;
+  drafts.length = 0;
+  invalidatePreview('');
+  previewStale = false;
+  staleReason = '';
+  renderDrafts();
+}
+
+/** 预检整批：每条草稿的错误 + 整批可否提交 + 当前家谱版本（不写入数据） */
+async function previewBatch() {
+  if (drafts.length === 0) { toast('草稿为空，无法预检', true); return; }
+  const keys = draftKeys();
+  const status = $('batch-status');
+  status.hidden = false;
+  status.className = 'batch-status info';
+  status.textContent = '预检中…';
+  try {
+    const data = await api('/api/edges/batch/preview', {
+      method: 'POST',
+      body: JSON.stringify({ edges: drafts.map((d) => ({ parentId: d.parentId, childId: d.childId })) }),
+    });
+    // 请求往返期间草稿可能已被改动：结果只对当时的草稿快照有效
+    if (JSON.stringify(keys) !== JSON.stringify(draftKeys())) {
+      invalidatePreview('草稿在预检期间已变化，请重新预检');
+      return;
+    }
+    const byKey = new Map();
+    for (const item of data.items) {
+      byKey.set(keys[item.index], {
+        errors: item.errors,
+        parentName: item.parentName,
+        childName: item.childName,
+      });
+    }
+    preview = { version: data.version, valid: data.valid, byKey, keys };
+    previewStale = false;
+    staleReason = '';
+    renderDrafts();
+  } catch (err) {
+    toast(err.message, true);
+    renderDrafts();
+  }
+}
+
+/** 提交整批：必须携带预检返回的版本；任何一条非法或期间家谱变化都会被整批拒绝 */
+async function submitBatch() {
+  if (!preview || previewStale || !preview.valid) {
+    toast('请先预检且整批全部合法后再提交', true);
+    return;
+  }
+  const btn = $('batch-submit');
+  btn.disabled = true;
+  try {
+    const data = await api('/api/edges/batch', {
+      method: 'POST',
+      body: JSON.stringify({
+        version: preview.version,
+        edges: drafts.map((d) => ({ parentId: d.parentId, childId: d.childId })),
+      }),
+    });
+    drafts.length = 0;
+    preview = null;
+    previewStale = false;
+    staleReason = '';
+    applyStateAndRender(data);
+    markStale();
+    toast('整批关系已一次写入');
+  } catch (err) {
+    // 409 版本冲突：服务端家谱已更新，拉取最新状态并要求重新预检
+    if (/重新预检/.test(err.message)) {
+      invalidatePreview('家谱在预检后已被修改，请重新预检后再提交');
+      refresh().catch(() => {});
+    }
+    toast(err.message, true);
+    renderDrafts();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderDrafts() {
+  const list = $('draft-list');
+  const empty = $('draft-empty');
+  const count = $('draft-count');
+  const status = $('batch-status');
+  const submitBtn = $('batch-submit');
+  const previewBtn = $('batch-preview');
+
+  count.textContent = String(drafts.length);
+  list.replaceChildren();
+
+  if (drafts.length === 0) {
+    empty.hidden = false;
+    list.hidden = true;
+    status.hidden = true;
+    submitBtn.disabled = true;
+    previewBtn.disabled = true;
+    return;
+  }
+  empty.hidden = true;
+  list.hidden = false;
+  previewBtn.disabled = false;
+
+  const currentKeys = JSON.stringify(draftKeys());
+  const previewLive = preview && !previewStale && JSON.stringify(preview.keys) === currentKeys;
+
+  for (const [i, d] of drafts.entries()) {
+    const info = previewLive ? preview.byKey.get(d.key) : null;
+    const rowInvalid = !!(info && info.errors.length > 0);
+    const li = el('li', { class: rowInvalid ? 'draft-row invalid' : info ? 'draft-row valid' : 'draft-row' });
+
+    const head = el('div', { class: 'draft-main' });
+    head.appendChild(el('span', { class: 'draft-index', text: `#${i + 1}` }));
+    head.appendChild(el('span', { class: 'edge-text' }, [
+      el('span', { class: 'p-name', text: info ? info.parentName : nameOf(d.parentId) }),
+      document.createTextNode(' → '),
+      el('span', { class: 'c-name', text: info ? info.childName : nameOf(d.childId) }),
+    ]));
+    if (info) {
+      head.appendChild(el('span', {
+        class: rowInvalid ? 'draft-tag bad' : 'draft-tag ok',
+        text: rowInvalid ? `✗ ${info.errors.length} 项错误` : '✓ 合法',
+      }));
+    }
+    head.appendChild(el('button', {
+      class: 'danger-link',
+      text: '移除',
+      onClick: () => removeDraft(d.key),
+    }));
+    li.appendChild(head);
+
+    if (info && rowInvalid) {
+      const ul = el('ul', { class: 'draft-errors' });
+      for (const msg of info.errors) ul.appendChild(el('li', { text: msg }));
+      li.appendChild(ul);
+    }
+    list.appendChild(li);
+  }
+
+  // 整批状态提示
+  status.hidden = false;
+  if (!previewLive) {
+    status.className = 'batch-status warn';
+    status.textContent = staleReason || '草稿尚未预检，或预检结果已失效：请点击「预检整批」。';
+    submitBtn.disabled = true;
+    return;
+  }
+  if (preview.valid) {
+    status.className = 'batch-status ok';
+    status.textContent =
+      `预检通过：${drafts.length} 条草稿全部合法，整批可以提交。提交将基于家谱版本 ${preview.version} 原子写入；若期间家谱被修改会被拒绝。`;
+    submitBtn.disabled = false;
+  } else {
+    const bad = drafts.filter((d) => (preview.byKey.get(d.key) || { errors: [] }).errors.length > 0).length;
+    status.className = 'batch-status error';
+    status.textContent =
+      `预检未通过：${bad}/${drafts.length} 条草稿存在错误（见各行下方），整批不可提交；修正草稿后请重新预检。`;
+    submitBtn.disabled = true;
+  }
+}
+
+$('draft-add').addEventListener('click', addDraftFromForm);
+$('batch-preview').addEventListener('click', previewBatch);
+$('batch-submit').addEventListener('click', submitBatch);
+$('batch-clear').addEventListener('click', clearDrafts);
 
 /* ---------------- 共同祖先查询结果渲染 ---------------- */
 
